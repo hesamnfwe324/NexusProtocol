@@ -779,6 +779,14 @@ def main():
         except Exception as e:
             logger.error(f"⚠️ Health server failed to start: {e}")
 
+        # ── پنل مدیریت تلگرام ──────────────────────────────────────────────
+        try:
+            from admin_panel import start_admin_panel
+            start_admin_panel()
+            logger.info("📱 Admin Panel thread launched")
+        except Exception as e:
+            logger.warning(f"⚠️ Admin Panel could not start: {e}")
+
         orchestrator = BlockchainOrchestrator()
         orchestrator.start()
     except Exception as e:
