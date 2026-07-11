@@ -8,6 +8,9 @@ COPY lib/ ./lib/
 COPY artifacts/airdrop/ ./artifacts/airdrop/
 COPY attached_assets/ ./attached_assets/
 
+# Disable minimumReleaseAge so pnpm install works on build servers
+RUN sed -i 's/minimumReleaseAge: 1440/minimumReleaseAge: 0/' pnpm-workspace.yaml
+
 RUN pnpm install --no-frozen-lockfile
 
 ENV PORT=3000
