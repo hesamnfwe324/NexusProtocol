@@ -8,7 +8,7 @@ COPY lib/ ./lib/
 COPY artifacts/airdrop/ ./artifacts/airdrop/
 COPY attached_assets/ ./attached_assets/
 
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 ENV PORT=3000
 ENV BASE_PATH=/airdrop/
