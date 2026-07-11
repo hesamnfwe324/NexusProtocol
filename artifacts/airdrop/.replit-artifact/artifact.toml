@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/airdrop/"
+title = "Airdrop Claim Portal"
+version = "1.0.0"
+id = "artifacts/airdrop"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/airdrop/" ]
+localPort = 19743
+
+[services.development]
+run = "pnpm --filter @workspace/airdrop run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/airdrop", "run", "build" ]
+publicDir = "artifacts/airdrop/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19743"
+BASE_PATH = "/airdrop/"

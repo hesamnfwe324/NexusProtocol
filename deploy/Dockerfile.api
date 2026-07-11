@@ -1,0 +1,32 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+RUN npm install -g pnpm@10
+
+# فقط فایل‌های ضروری برای install
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+
+# همه lib‌ها (api-server به همه نیاز داره)
+COPY lib/ ./lib/
+COPY artifacts/api-server/ ./artifacts/api-server/
+
+# نصب dependencies (بدون frozen-lockfile برای سازگاری سرور)
+RUN pnpm install --no-frozen-lockfile
+
+# Build کردن
+RUN pnpm --filter @workspace/api-server run build
+
+# ── Runtime image (کوچک‌تر) ──────────────────────────────
+FROM node:20-alpine
+WORKDIR /app
+
+COPY --from=builder /app/artifacts/api-server/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+
+ENV PORT=8080
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+  CMD wget -qO- http://localhost:8080/api/healthz || exit 1
+
+CMD ["node", "--enable-source-maps", "dist/index.mjs"]

@@ -1,0 +1,17 @@
+[Unit]
+Description=Blockchain MEV Bot Orchestrator
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/mev-bot/bot
+ExecStart=/root/mev-bot/bot/venv/bin/python3 main_orchestrator.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=mev-bot
+
+[Install]
+WantedBy=multi-user.target
