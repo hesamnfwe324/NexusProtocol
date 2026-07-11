@@ -37,7 +37,7 @@ def create_health_app():
     
     return app
 
-def run_health_server(port: int = 9000):
+def run_health_server(port: int = int(os.getenv("PORT", os.getenv("HEALTH_PORT", "9000")))):
     """Run health check server in separate thread"""
     import threading
     
