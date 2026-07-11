@@ -17,12 +17,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
       prometheus-client>=0.17.0 \
       flask>=2.3.0 \
       gevent>=23.0.0 \
-      slack-sdk>=3.20.0 || true && \
+      slack-sdk>=3.20.0 \
+      "python-telegram-bot[job-queue]==20.7" || true && \
     pip install --no-cache-dir flashbots>=1.1.0 || \
     echo "flashbots not installed"
 
 COPY attached_assets/Profinalam_extracted/bot/ ./
 
-RUN mkdir -p logs
+RUN mkdir -p logs && chmod +x start_all.sh
 
-CMD ["python", "-u", "main_orchestrator.py"]
+CMD ["bash", "start_all.sh"]
