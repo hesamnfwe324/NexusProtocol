@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install dependencies
+RUN pip install --no-cache-dir \
+    python-telegram-bot==20.7 \
+    requests==2.31.0 \
+    python-dotenv==1.0.0
+
+COPY attached_assets/Profinalam_extracted/bot/admin_panel.py ./admin_panel.py
+
+# Health check endpoint (simple HTTP server on port 9001)
+ENV PORT=9001
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+  CMD curl -f http://localhost:${PORT}/health || exit 1
+
+CMD ["python", "-u", "admin_panel.py"]
