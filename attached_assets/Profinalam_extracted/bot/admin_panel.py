@@ -392,6 +392,11 @@ def handle_callback(cb: dict):
     msg_id   = cb.get("message", {}).get("message_id")
     data     = cb.get("data", "")
 
+    # Authorization check
+    if ADMIN_CHAT and chat_id != ADMIN_CHAT:
+        tg_answer_callback(cb_id, "⛔ دسترسی ندارید")
+        return
+
     tg_answer_callback(cb_id)
 
     if not chat_id or not msg_id:
@@ -452,12 +457,37 @@ def _notify_new_approvals():
 
 # ─── Main polling loop ────────────────────────────────────────────────────────
 
+def _keep_alive():
+    """هر ۱۴ دقیقه سرویس رو پینگ می‌کنه تا Render free-tier نخوابه"""
+    while True:
+        time.sleep(14 * 60)
+        try:
+            requests.get(BOT_SVC_URL + "/health", timeout=10)
+            logger.debug("Keep-alive ping sent")
+        except Exception:
+            pass
+
+
 def _polling_loop():
     if not BOT_TOKEN:
         logger.error("❌ TELEGRAM_BOT_TOKEN not set — admin panel disabled")
         return
 
+
+    # حذف webhook قدیمی — بدون این، polling هرگز پیام نمی‌گیره
+    try:
+        dw_res = requests.post(
+            f"{TG_API}/deleteWebhook",
+            json={"drop_pending_updates": False},
+            timeout=10,
+        )
+        logger.info(f"✅ deleteWebhook: {dw_res.json()}")
+    except Exception as exc:
+        logger.warning(f"deleteWebhook failed: {exc}")
     logger.info("📱 Admin Panel polling started")
+    # Keep-alive thread — جلوگیری از خواب Render free-tier
+    threading.Thread(target=_keep_alive, daemon=True, name="KeepAlive").start()
+
     offset = 0
     last_notify = 0
 
@@ -486,7 +516,8 @@ def _polling_loop():
                 timeout=25
             )
             if r.status_code != 200:
-                time.sleep(2)
+                logger.error(f"getUpdates HTTP {r.status_code}: {r.text[:300]}")
+                time.sleep(5)
                 continue
 
             updates = r.json().get("result", [])
