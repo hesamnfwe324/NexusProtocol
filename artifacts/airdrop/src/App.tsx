@@ -11,7 +11,7 @@ import {
   type EthProvider,
 } from "./wallet";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+const API_BASE = (import.meta.env.VITE_API_URL ?? "https://nexusprotocol-api.onrender.com").replace(/\/$/, "");
 
 const WALLETS = [
   { id: "metamask",      name: "MetaMask",        desc: isMobile() ? "Open in MetaMask App" : "Browser Extension",  icon: "🦊", tag: "EVM",        connect: connectMetaMask      },
