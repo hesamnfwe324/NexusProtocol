@@ -66,11 +66,11 @@ const WALLETS = [
 ];
 
 const MEDIA = [
-  { name: "CoinDesk",  color: "#F7A325" },
-  { name: "Decrypt",   color: "#38bdf8" },
-  { name: "The Block", color: "#00d97e" },
-  { name: "CoinTelegraph", color: "#f472b6" },
-  { name: "BeInCrypto", color: "#8b5cf6" },
+  { name: "CoinDesk",  color: "#818cf8" },
+  { name: "Decrypt",   color: "#818cf8" },
+  { name: "The Block", color: "#818cf8" },
+  { name: "CoinTelegraph", color: "#818cf8" },
+  { name: "BeInCrypto", color: "#818cf8" },
 ];
 
 const LIVE_CLAIMS = [
