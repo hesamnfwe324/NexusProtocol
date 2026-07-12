@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
 const SEGMENTS = [
-  { label: "Community Airdrop", pct: 30, color: "#ffffff", desc: "Distributed to eligible wallets via Season 1-3" },
-  { label: "Ecosystem Growth",  pct: 25, color: "#cccccc", desc: "Grants, incentives, and protocol integrations" },
-  { label: "Treasury",          pct: 20, color: "#999999", desc: "DAO-controlled reserve for future development" },
-  { label: "Team & Advisors",   pct: 15, color: "#666666", desc: "4-year vesting with 1-year cliff" },
-  { label: "Liquidity",         pct: 10, color: "#404040", desc: "DEX liquidity pools and market making" },
+  { label: "Community Airdrop", pct: 30, color: "#2563eb", desc: "Distributed to eligible wallets via Season 1-3" },
+  { label: "Ecosystem Growth",  pct: 25, color: "#0ea5e9", desc: "Grants, incentives, and protocol integrations" },
+  { label: "Treasury",          pct: 20, color: "#6366f1", desc: "DAO-controlled reserve for future development" },
+  { label: "Team & Advisors",   pct: 15, color: "#38bdf8", desc: "4-year vesting with 1-year cliff" },
+  { label: "Liquidity",         pct: 10, color: "#93c5fd", desc: "DEX liquidity pools and market making" },
 ];
 
 function useVisible(ref: React.RefObject<HTMLElement | null>) {
@@ -26,7 +26,7 @@ function DonutChart({ visible }: { visible: boolean }) {
 
   return (
     <svg width="160" height="160" className="donut-svg">
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,.04)" strokeWidth={stroke} />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(15,23,42,.06)" strokeWidth={stroke} />
       {SEGMENTS.map((seg, i) => {
         const dash = (seg.pct / 100) * circ;
         const gap = circ - dash;
@@ -51,8 +51,8 @@ function DonutChart({ visible }: { visible: boolean }) {
         offset += dash;
         return el;
       })}
-      <text x={cx} y={cy - 6} textAnchor="middle" fill="#ffffff" fontSize="18" fontWeight="800" fontFamily="Space Grotesk, sans-serif">1B</text>
-      <text x={cx} y={cy + 14} textAnchor="middle" fill="#9a9a9a" fontSize="10" fontFamily="Inter, sans-serif">Total Supply</text>
+      <text x={cx} y={cy - 6} textAnchor="middle" fill="#0b1730" fontSize="18" fontWeight="800" fontFamily="Space Grotesk, sans-serif">1B</text>
+      <text x={cx} y={cy + 14} textAnchor="middle" fill="#8a94ab" fontSize="10" fontFamily="Inter, sans-serif">Total Supply</text>
     </svg>
   );
 }
