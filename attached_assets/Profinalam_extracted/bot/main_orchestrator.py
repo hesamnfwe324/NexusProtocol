@@ -775,7 +775,7 @@ def main():
         
         # Start health server in a separate thread
         try:
-            run_health_server(port=int(os.getenv("HEALTH_PORT", "9000")))
+            run_health_server(port=int(os.getenv("PORT", os.getenv("HEALTH_PORT", "9000"))))
         except Exception as e:
             logger.error(f"⚠️ Health server failed to start: {e}")
 
