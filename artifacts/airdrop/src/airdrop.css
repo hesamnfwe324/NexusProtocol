@@ -132,9 +132,10 @@ body {
 .nav-brand { display:flex;align-items:center;gap:10px;cursor:pointer;flex-shrink:0; }
 .nav-logo-wrap {
   width:36px;height:36px;border-radius:10px;
-  background:var(--accent); color:var(--on-accent);
+  background:linear-gradient(135deg,#1c1c1c,#050505); color:var(--text);
+  border:1px solid rgba(255,255,255,.18);
   display:grid;place-items:center;
-  box-shadow:0 0 0 1px rgba(255,255,255,.35),0 4px 16px rgba(255,255,255,.22);
+  box-shadow:0 0 0 1px rgba(255,255,255,.08),0 4px 16px rgba(0,0,0,.5);
   flex-shrink:0;
 }
 .nav-brand-name { font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;color:var(--text); }
