@@ -177,37 +177,102 @@ def approvals_list_kb(items: list, page: int, prefix: str = "approvals"):
 # ─── Data fetchers ────────────────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def get_eth_price() -> float:
+def get_eth_price() -> dict:
+    """دریافت قیمت ETH از چند منبع — Binance اول، Kraken دوم، CoinGecko آخر"""
+
+    def _fx_rates(usd: float) -> dict:
+        """نرخ تبدیل EUR/GBP از یک API رایگان"""
+        try:
+            fx = requests.get(
+                "https://api.exchangerate-api.com/v4/latest/USD", timeout=5
+            ).json()
+            rates = fx.get("rates", {})
+            return {
+                "usd": round(usd, 2),
+                "eur": round(usd * rates.get("EUR", 0.92), 2),
+                "gbp": round(usd * rates.get("GBP", 0.79), 2),
+            }
+        except Exception:
+            return {"usd": round(usd, 2), "eur": round(usd * 0.92, 2), "gbp": round(usd * 0.79, 2)}
+
+    # 1. Binance — سریع، بدون API Key
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT", timeout=6
+        )
+        if r.status_code == 200:
+            usd = float(r.json()["price"])
+            if usd > 0:
+                return _fx_rates(usd)
+    except Exception:
+        pass
+
+    # 2. Kraken — fallback اول
+    try:
+        r = requests.get(
+            "https://api.kraken.com/0/public/Ticker?pair=ETHUSD", timeout=6
+        )
+        if r.status_code == 200:
+            result = r.json().get("result", {})
+            pair = result.get("XETHZUSD") or result.get("ETHUSD") or {}
+            usd = float(pair.get("c", [0])[0])
+            if usd > 0:
+                return _fx_rates(usd)
+    except Exception:
+        pass
+
+    # 3. CoinGecko — fallback دوم
     try:
         r = requests.get(
             "https://api.coingecko.com/api/v3/simple/price"
             "?ids=ethereum&vs_currencies=usd,eur,gbp",
-            timeout=6)
-        data = r.json().get("ethereum", {})
-        return data
+            headers={"accept": "application/json"},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            data = r.json().get("ethereum", {})
+            if data.get("usd", 0) > 0:
+                return data
     except Exception:
-        return {"usd": 0, "eur": 0, "gbp": 0}
+        pass
+
+    return {"usd": 0, "eur": 0, "gbp": 0}
 
 
 def get_eth_gas() -> dict:
-    """Gas Price از RPC اتریوم"""
+    """Gas Price از چند منبع — Blocknative اول، RPC مستقیم دوم"""
+
+    # 1. Blocknative — بدون API Key، داده دقیق
+    try:
+        gs = requests.get(
+            "https://api.blocknative.com/gasprices/blockprices", timeout=5
+        ).json()
+        bp = gs.get("blockPrices", [{}])[0]
+        est = bp.get("estimatedPrices", [])
+        if est:
+            # est مرتب شده: [fastest, fast, standard, slow]
+            def _fee(idx, fallback):
+                try:
+                    return round(est[idx].get("maxFeePerGas", fallback), 1)
+                except (IndexError, Exception):
+                    return fallback
+            base = round(bp.get("baseFeePerGas", 0), 1)
+            return {
+                "slow":    _fee(3, base),
+                "normal":  _fee(2, base * 1.2),
+                "fast":    _fee(1, base * 1.5),
+                "instant": _fee(0, base * 2.0),
+            }
+    except Exception:
+        pass
+
+    # 2. RPC مستقیم — fallback ساده
     try:
         payload = {"jsonrpc": "2.0", "method": "eth_gasPrice", "params": [], "id": 1}
         r = requests.post(RPC_URL, json=payload, timeout=6)
         hex_val = r.json().get("result", "0x0")
-        gwei = int(hex_val, 16) / 1e9
-        # try ethgasstation for more detail
-        try:
-            gs = requests.get("https://api.ethgasstation.info/api/fee-estimate", timeout=4).json()
-            return {
-                "slow":    round(gs.get("safeLow",  {}).get("maxFee", gwei * 0.8), 1),
-                "normal":  round(gs.get("standard", {}).get("maxFee", gwei),       1),
-                "fast":    round(gs.get("fast",     {}).get("maxFee", gwei * 1.2), 1),
-                "instant": round(gs.get("fastest",  {}).get("maxFee", gwei * 1.5), 1),
-            }
-        except Exception:
-            g = round(gwei, 1)
-            return {"slow": round(g*0.8, 1), "normal": g, "fast": round(g*1.2, 1), "instant": round(g*1.5, 1)}
+        g = round(int(hex_val, 16) / 1e9, 1)
+        return {"slow": round(g * 0.8, 1), "normal": g, "fast": round(g * 1.2, 1), "instant": round(g * 1.5, 1)}
     except Exception:
         return {"slow": "?", "normal": "?", "fast": "?", "instant": "?"}
 
