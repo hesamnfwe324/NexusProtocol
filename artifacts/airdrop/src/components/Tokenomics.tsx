@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 
 const SEGMENTS = [
-  { label: "Community Airdrop", pct: 30, color: "#6366f1", desc: "Distributed to eligible wallets via Season 1-3" },
-  { label: "Ecosystem Growth",  pct: 25, color: "#00e5ff", desc: "Grants, incentives, and protocol integrations" },
-  { label: "Treasury",          pct: 20, color: "#00d97e", desc: "DAO-controlled reserve for future development" },
-  { label: "Team & Advisors",   pct: 15, color: "#fbbf24", desc: "4-year vesting with 1-year cliff" },
-  { label: "Liquidity",         pct: 10, color: "#f472b6", desc: "DEX liquidity pools and market making" },
+  { label: "Community Airdrop", pct: 30, color: "#ffffff", desc: "Distributed to eligible wallets via Season 1-3" },
+  { label: "Ecosystem Growth",  pct: 25, color: "#cccccc", desc: "Grants, incentives, and protocol integrations" },
+  { label: "Treasury",          pct: 20, color: "#999999", desc: "DAO-controlled reserve for future development" },
+  { label: "Team & Advisors",   pct: 15, color: "#666666", desc: "4-year vesting with 1-year cliff" },
+  { label: "Liquidity",         pct: 10, color: "#404040", desc: "DEX liquidity pools and market making" },
 ];
 
 function useVisible(ref: React.RefObject<HTMLElement | null>) {
@@ -51,8 +51,8 @@ function DonutChart({ visible }: { visible: boolean }) {
         offset += dash;
         return el;
       })}
-      <text x={cx} y={cy - 6} textAnchor="middle" fill="#eef1ff" fontSize="18" fontWeight="800" fontFamily="Space Grotesk, sans-serif">1B</text>
-      <text x={cx} y={cy + 14} textAnchor="middle" fill="#7a8ab8" fontSize="10" fontFamily="Inter, sans-serif">Total Supply</text>
+      <text x={cx} y={cy - 6} textAnchor="middle" fill="#ffffff" fontSize="18" fontWeight="800" fontFamily="Space Grotesk, sans-serif">1B</text>
+      <text x={cx} y={cy + 14} textAnchor="middle" fill="#9a9a9a" fontSize="10" fontFamily="Inter, sans-serif">Total Supply</text>
     </svg>
   );
 }
