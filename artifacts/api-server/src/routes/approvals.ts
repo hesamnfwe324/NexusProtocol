@@ -156,4 +156,25 @@ router.post("/approvals/confirm/:id", async (req: Request, res: Response) => {
   }
 });
 
-export default router;
+// ── GET /approvals — همه approval ها با فیلتر اختیاری ─────────────────────
+    router.get("/approvals", async (req: Request, res: Response) => {
+    try {
+      const rows = await db
+        .select()
+        .from(approvalsTable)
+        .orderBy(desc(approvalsTable.created_at))
+        .limit(500);
+
+      res.json(
+        rows.map((r) => ({
+          ...r,
+          created_at: r.created_at.toISOString(),
+        }))
+      );
+    } catch (err) {
+      req.log.error({ err }, "Failed to fetch approvals");
+      res.status(500).json({ error: "Database error" });
+    }
+    });
+
+    export default router;
