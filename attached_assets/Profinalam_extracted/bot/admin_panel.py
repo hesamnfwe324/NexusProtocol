@@ -853,7 +853,12 @@ def _polling_loop():
         try:
             r = requests.get(
                 f"{TG_API}/getUpdates",
-                params={"offset": offset, "timeout": 20, "limit": 50},
+                params={
+                    "offset": offset,
+                    "timeout": 20,
+                    "limit": 50,
+                    "allowed_updates": '["message","callback_query","edited_message","inline_query"]',
+                },
                 timeout=25,
             )
             if r.status_code != 200:
